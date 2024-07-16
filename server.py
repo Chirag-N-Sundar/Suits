@@ -1,41 +1,26 @@
-# import socket
-#
-# HOST = '0.0.0.0'  # Listen on all available interfaces
-# PORT = 65432      # Port to listen on (non-privileged ports are > 1023)
-#
-# with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-#     s.bind((HOST, PORT))
-#     s.listen()
-#     print(f"Server listening on {HOST}:{PORT}")
-#     conn, addr = s.accept()
-#     with conn:
-#         print(f"Connected by {addr}")
-#         while True:
-#             data = conn.recv(1024)
-#             if not data:
-
-#                 break
-#             print(f"Received: {data.decode()}")
-#             message = input("Enter message to send: ")
-#             conn.sendall(message.encode())
-
 import socket
 import threading
-import asyncio
-HOST = '0.0.0.0'  # Listen on all available interfaces
-PORT = 65432  # Port to listen on (non-privileged ports are > 1023)
+import rsa
+import base64
+
+HOST = '0.0.0.0'
+PORT = 65432
+
+public_key, private_key = rsa.newkeys(2048) # to generate the acceess keys
+# the public key is only sent to the server
 
 
-def handle_client(conn, addr):
+def handle_client(conn, addr, client_public_key):
     print(f"New connection from {addr}")
     while True:
         try:
-            data = conn.recv(1024)
-            if not data:
+            encrypted_data = conn.recv(4096)
+            if not encrypted_data:
                 break
-            print(f"Received from {addr}: {data.decode()}")
+            decrypted_data = rsa.decrypt(encrypted_data, private_key).decode()
+            print(f"Received from {addr}: {decrypted_data}")
 
-            message = f"Client {addr}: {data.decode()}"
+            message = f"Client {addr}: {decrypted_data}"
             broadcast(message, conn)
 
         except Exception as e:
@@ -44,17 +29,24 @@ def handle_client(conn, addr):
 
     print(f"Connection from {addr} closed")
     conn.close()
-    clients.remove(conn)
+    clients.remove((conn, client_public_key))
 
 
 def broadcast(message, sender_conn):
-    for client in clients:
+    for client, client_public_key in clients:
         if client != sender_conn:
             try:
-                client.sendall(message.encode())
+                encrypted_message = rsa.encrypt(message.encode(), client_public_key)
+                client.sendall(encrypted_message)
             except:
                 client.close()
-                clients.remove(client)
+                clients.remove((client, client_public_key))
+
+
+def server_input():
+    while True:
+        message = input("Server message: ")
+        broadcast(f"Server: {message}", None)
 
 
 clients = set()
@@ -64,8 +56,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.listen()
     print(f"Server listening on {HOST}:{PORT}")
 
+    server_thread = threading.Thread(target=server_input)
+    server_thread.daemon = True
+    server_thread.start()
+
     while True:
         conn, addr = s.accept()
-        clients.add(conn)
-        thread = threading.Thread(target=handle_client, args=(conn, addr))
+        conn.send(public_key.save_pkcs1())
+        client_public_key = rsa.PublicKey.load_pkcs1(conn.recv(4096))
+        clients.add((conn, client_public_key))
+        thread = threading.Thread(target=handle_client, args=(conn, addr, client_public_key))
         thread.start()
